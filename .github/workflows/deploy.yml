@@ -53,15 +53,23 @@ jobs:
           set -euo pipefail
           sha="${RUN_SHA:-$GITHUB_SHA}"
           tag="${INPUT_TAG:-${sha:0:7}}"
-          # On a manual run, a tag that is not a commit SHA (e.g. "main") deploys the files of the
-          # branch head; an explicit SHA deploys the files of that commit, so a rollback is consistent.
-          if [[ "$tag" =~ ^[0-9a-f]{7,40}$ ]]; then ref="$tag"; else ref="$sha"; fi
+          # The compose files deployed come from the same commit as the image: the CI run's full SHA,
+          # or, on a manual run given a commit SHA (short or full), that commit, so a rollback is
+          # consistent. A tag that is not a SHA (e.g. "main") deploys the files of the branch head.
+          if [[ -n "$INPUT_TAG" && "$INPUT_TAG" =~ ^[0-9a-f]{7,40}$ ]]; then ref="$INPUT_TAG"; else ref="$sha"; fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "image=ghcr.io/${OWNER,,}/openwa:${tag}" >> "$GITHUB_OUTPUT"
 
+      # actions/checkout only fetches a full SHA, a branch or a tag, never a short SHA: fetch the
+      # history, then switch to the commit with git, which resolves both forms.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ steps.image.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Check out the deployed commit
+        env:
+          REF: ${{ steps.image.outputs.ref }}
+        run: git checkout --quiet --detach "$REF" && git log --oneline -1
 
       - name: Configure SSH
         env:
