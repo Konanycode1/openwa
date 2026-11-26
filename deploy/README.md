@@ -5,7 +5,7 @@
 1. Un push sur `main` lance le workflow **CI** (lint, tests, build). Il construit l'image Docker,
    vérifie qu'elle démarre, puis la publie sur `ghcr.io/konanycode1/openwa:<sha-court>`.
 2. Si la CI réussit, le workflow **Deploy production** (`.github/workflows/deploy.yml`) se connecte
-   au VPS en SSH, copie les fichiers compose dans `/opt/openwa` et télécharge l'image testée. Il
+   au VPS en SSH, copie les fichiers compose dans `/home/konan/apps/openwa` et télécharge l'image testée. Il
    redémarre ensuite la stack : API, Postgres et Caddy.
 3. Caddy obtient automatiquement le certificat HTTPS Let's Encrypt et sert l'API, le dashboard et
    les WebSockets sur `https://openwa.abrahamkonany.com`.
@@ -27,10 +27,9 @@ Prérequis : Docker Engine et le plugin `docker compose`, ainsi que les ports 80
 Rien ne doit déjà écouter sur ces ports (pas de nginx ou d'apache).
 
 ```bash
-# Utilisateur dédié au déploiement, membre du groupe docker
-sudo adduser --disabled-password --gecos "" deploy
-sudo usermod -aG docker deploy
-sudo mkdir -p /opt/openwa && sudo chown deploy:deploy /opt/openwa
+# L'utilisateur konan doit pouvoir lancer docker sans sudo (se reconnecter ensuite)
+sudo usermod -aG docker konan
+mkdir -p ~/apps/openwa
 
 # Pare-feu (exemple ufw)
 sudo ufw allow OpenSSH && sudo ufw allow 80/tcp && sudo ufw allow 443/tcp && sudo ufw allow 443/udp
@@ -42,17 +41,17 @@ Sur votre machine :
 
 ```bash
 ssh-keygen -t ed25519 -N "" -C "github-actions-openwa" -f ~/.ssh/openwa-deploy
-ssh-copy-id -i ~/.ssh/openwa-deploy.pub deploy@<IP_DU_VPS>
+ssh-copy-id -i ~/.ssh/openwa-deploy.pub konan@<IP_DU_VPS>
 ssh-keyscan -H <IP_DU_VPS>          # sortie à mettre dans le secret VPS_KNOWN_HOSTS
 ```
 
 ### 4. Fichier `.env` de production
 
-Copiez `deploy/.env.production.example` vers `/opt/openwa/.env` sur le serveur, puis remplacez
+Copiez `deploy/.env.production.example` vers `/home/konan/apps/openwa/.env` sur le serveur, puis remplacez
 chaque valeur `<...>` (`openssl rand -hex 32`). Protégez ensuite le fichier :
 
 ```bash
-chmod 600 /opt/openwa/.env
+chmod 600 ~/apps/openwa/.env
 ```
 
 `API_KEY_PEPPER` ne doit plus jamais changer après le premier démarrage, sinon toutes les clés API
@@ -65,7 +64,7 @@ Dans **Settings → Environments**, créez l'environnement `production`. Ajoutez
 | Secret            | Valeur                                                |
 | ----------------- | ----------------------------------------------------- |
 | `VPS_HOST`        | IP ou nom d'hôte du VPS                               |
-| `VPS_USER`        | `deploy`                                              |
+| `VPS_USER`        | `konan`                                               |
 | `VPS_SSH_KEY`     | contenu de `~/.ssh/openwa-deploy` (la clé **privée**) |
 | `VPS_KNOWN_HOSTS` | sortie de `ssh-keyscan -H <IP_DU_VPS>`                |
 | `VPS_PORT`        | facultatif, port SSH s'il est différent de 22         |
@@ -84,7 +83,7 @@ docker exec openwa-api cat /app/data/.api-key
 ## Commandes utiles sur le VPS
 
 ```bash
-cd /opt/openwa
+cd ~/apps/openwa
 cat .deployed-image                                  # image actuellement en production
 docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile postgres ps
 docker logs -f openwa-api

@@ -37,7 +37,7 @@ jobs:
       name: production
       url: https://openwa.abrahamkonany.com
     env:
-      DEPLOY_DIR: /opt/openwa
+      DEPLOY_DIR: /home/konan/apps/openwa
     steps:
       - name: Resolve commit and image
         id: image
