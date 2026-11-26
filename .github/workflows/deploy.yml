@@ -21,9 +21,10 @@ concurrency:
   group: deploy-production
   cancel-in-progress: false
 
+# Repository rule (src/common/ci-privilege-gate.spec.ts): the workflow-level block is contents: read
+# only; a job that needs more names it itself.
 permissions:
   contents: read
-  packages: read
 
 jobs:
   deploy:
@@ -33,6 +34,9 @@ jobs:
       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
     environment:
       name: production
       url: https://openwa.abrahamkonany.com
