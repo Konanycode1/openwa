@@ -95,7 +95,7 @@ jobs:
           # shellcheck disable=SC2029
           ssh vps "mkdir -p '$DEPLOY_DIR/scripts' && test -f '$DEPLOY_DIR/.env'" \
             || { echo "::error::$DEPLOY_DIR/.env is missing on the server (copy deploy/.env.production.example)"; exit 1; }
-          scp docker-compose.yml deploy/docker-compose.prod.yml deploy/Caddyfile "vps:$DEPLOY_DIR/"
+          scp docker-compose.yml deploy/docker-compose.prod.yml "vps:$DEPLOY_DIR/"
           scp scripts/postgres-init-schema.sh "vps:$DEPLOY_DIR/scripts/"
 
       - name: Pull and restart
@@ -114,7 +114,7 @@ jobs:
           export OPENWA_IMAGE="$2"
           compose() { docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile postgres "$@"; }
           trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
-          compose pull openwa-api postgres caddy
+          compose pull openwa-api postgres
           compose up -d --no-build --remove-orphans
           printf '%s\n' "$OPENWA_IMAGE" > .deployed-image
           docker image prune -f >/dev/null
@@ -142,6 +142,6 @@ jobs:
             fi
             sleep 10
           done
-          echo "::error::https://openwa.abrahamkonany.com/api/health/ready is not reachable (DNS, firewall or Caddy certificate?)"
-          ssh vps "docker logs --tail 40 openwa-caddy" || true
+          echo "::error::https://openwa.abrahamkonany.com/api/health/ready is not reachable (nginx server block or certificate? see deploy/README.md)"
+          ssh vps "docker logs --tail 40 nginx" || true
           exit 1

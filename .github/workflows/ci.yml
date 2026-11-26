@@ -8,7 +8,8 @@ on:
 
 env:
   NODE_VERSION: '22'
-  DOCKER_PLATFORMS: linux/amd64,linux/arm64
+  # The production VPS is x86_64: building arm64 under QEMU only costs private-runner minutes.
+  DOCKER_PLATFORMS: linux/amd64
   # Private-repo runners have ~8 GB RAM, so Node's default heap cap is ~2 GB and the jest/coverage
   # runs die with "JavaScript heap out of memory". Raise the cap for every Node process in CI.
   NODE_OPTIONS: --max-old-space-size=4096
