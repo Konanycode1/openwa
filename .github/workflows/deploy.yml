@@ -1,0 +1,143 @@
+name: Deploy production
+
+# Deploys the image the CI workflow already built, tested and pushed to GHCR
+# (ghcr.io/<owner>/openwa:<short-sha>) to the production VPS over SSH.
+# Runs automatically after a successful CI run on main, or manually (Actions > Deploy production >
+# Run workflow), optionally with an explicit image tag to roll back to.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag to deploy (short commit SHA, or "main"). Empty = current main head.'
+        required: false
+        default: ''
+
+# Never run two deploys at once; a newer one waits for the running one to finish.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  deploy:
+    name: Deploy to openwa.abrahamkonany.com
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: production
+      url: https://openwa.abrahamkonany.com
+    env:
+      DEPLOY_DIR: /opt/openwa
+    steps:
+      - name: Resolve commit and image
+        id: image
+        env:
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          INPUT_TAG: ${{ inputs.tag }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          sha="${RUN_SHA:-$GITHUB_SHA}"
+          tag="${INPUT_TAG:-${sha:0:7}}"
+          # On a manual run, a tag that is not a commit SHA (e.g. "main") deploys the files of the
+          # branch head; an explicit SHA deploys the files of that commit, so a rollback is consistent.
+          if [[ "$tag" =~ ^[0-9a-f]{7,40}$ ]]; then ref="$tag"; else ref="$sha"; fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${OWNER,,}/openwa:${tag}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ steps.image.outputs.ref }}
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          HOST: ${{ secrets.VPS_HOST }}
+          USER: ${{ secrets.VPS_USER }}
+          PORT: ${{ secrets.VPS_PORT }}
+        run: |
+          set -euo pipefail
+          for v in SSH_KEY KNOWN_HOSTS HOST USER; do
+            [ -n "${!v}" ] || { echo "::error::Missing secret for $v (see deploy/README.md)"; exit 1; }
+          done
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts && chmod 644 ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host vps
+            HostName $HOST
+            User $USER
+            Port ${PORT:-22}
+            IdentityFile ~/.ssh/id_deploy
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+          EOF
+
+      - name: Upload compose files
+        run: |
+          set -euo pipefail
+          # DEPLOY_DIR is expanded locally on purpose (it is set in this workflow, not on the server).
+          # shellcheck disable=SC2029
+          ssh vps "mkdir -p '$DEPLOY_DIR/scripts' && test -f '$DEPLOY_DIR/.env'" \
+            || { echo "::error::$DEPLOY_DIR/.env is missing on the server (copy deploy/.env.production.example)"; exit 1; }
+          scp docker-compose.yml deploy/docker-compose.prod.yml deploy/Caddyfile "vps:$DEPLOY_DIR/"
+          scp scripts/postgres-init-schema.sh "vps:$DEPLOY_DIR/scripts/"
+
+      - name: Pull and restart
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The token is piped over stdin so it never appears in the remote command line or process list.
+          # shellcheck disable=SC2029
+          printf '%s' "$GHCR_TOKEN" | ssh vps "docker login ghcr.io -u '$GHCR_USER' --password-stdin >/dev/null"
+          ssh vps bash -s -- "$DEPLOY_DIR" "$IMAGE" <<'REMOTE'
+          set -euo pipefail
+          cd "$1"
+          export OPENWA_IMAGE="$2"
+          compose() { docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile postgres "$@"; }
+          trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+          compose pull openwa-api postgres caddy
+          compose up -d --no-build --remove-orphans
+          printf '%s\n' "$OPENWA_IMAGE" > .deployed-image
+          docker image prune -f >/dev/null
+          REMOTE
+
+      - name: Wait for the API to be healthy
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            status="$(ssh vps "docker inspect -f '{{.State.Health.Status}}' openwa-api" || true)"
+            echo "attempt $i: $status"
+            if [ "$status" = healthy ]; then exit 0; fi
+            sleep 10
+          done
+          echo "::error::openwa-api did not become healthy; last logs:"
+          ssh vps "docker logs --tail 80 openwa-api" || true
+          exit 1
+
+      - name: Check the public URL
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 12); do
+            if curl -fsS --max-time 10 https://openwa.abrahamkonany.com/api/health/ready >/dev/null; then
+              echo "https://openwa.abrahamkonany.com is up"; exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::https://openwa.abrahamkonany.com/api/health/ready is not reachable (DNS, firewall or Caddy certificate?)"
+          ssh vps "docker logs --tail 40 openwa-caddy" || true
+          exit 1

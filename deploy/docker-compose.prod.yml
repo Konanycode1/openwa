@@ -1,0 +1,34 @@
+# Production override, used together with the root docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile postgres up -d --no-build
+# - openwa-api runs the image built and tested by CI (OPENWA_IMAGE) instead of building locally.
+# - Caddy terminates TLS for OPENWA_DOMAIN (automatic Let's Encrypt certificate) and proxies to the API.
+#   The API port itself stays bound to 127.0.0.1 only (see the root file).
+services:
+  openwa-api:
+    image: ${OPENWA_IMAGE:?OPENWA_IMAGE must be set to ghcr.io/<owner>/openwa:<tag>}
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: openwa-caddy
+    restart: unless-stopped
+    depends_on:
+      - openwa-api
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp'
+    environment:
+      OPENWA_DOMAIN: ${OPENWA_DOMAIN:?OPENWA_DOMAIN must be set in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - openwa-network
+    mem_limit: 256m
+
+volumes:
+  caddy-data:
+    name: openwa_caddy-data
+  caddy-config:
+    name: openwa_caddy-config
